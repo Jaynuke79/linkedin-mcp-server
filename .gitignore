@@ -1,0 +1,8 @@
+.token
+token
+*.token
+.venv/
+__pycache__/
+*.py[cod]
+*.bak
+*.bak[0-9]

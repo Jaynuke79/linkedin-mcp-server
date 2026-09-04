@@ -168,6 +168,29 @@ returns an upload URL and an image URN, then the bytes go to that URL by `PUT`.
 Because `w_member_social` is write-only against `/rest/images`, the upload's own
 `201` is the only confirmation available; there is no readable status to poll.
 
+## The truncation guard
+
+A long post is a single long JSON string inside a `tools/call`. If the model
+writing that call runs out of output tokens mid-string, the harness still emits a
+valid call with a shortened `text`, and nothing downstream can distinguish that
+from a deliberately short post. This is the most likely way a post goes out
+half-written.
+
+So `linkedin_create_post` and `linkedin_edit_post` refuse text that reads as cut
+off mid-thought, before publishing rather than after. Text is rejected when it:
+
+- ends with `,` `;` `:`
+- ends on a dangling word such as `and`, `the`, `to`, `that`, `with`
+- leaves a `(`, `[`, or `{` unclosed, or a double quote unbalanced
+- ends on a letter or digit with no closing punctuation
+
+Endings that are legitimately bare are exempt: hashtags, URLs, and anything
+ending in an emoji or other non-alphanumeric character.
+
+It is a heuristic, so pass `allow_incomplete: true` when an ending is deliberate.
+Both tools also report the published `characters` count, which is what lets you
+notice a draft that went in at 1,800 characters and came out at 900.
+
 ## Editing a published post
 
 `linkedin_edit_post` replaces a post's text. The new text replaces the old

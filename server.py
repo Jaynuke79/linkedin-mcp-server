@@ -34,6 +34,51 @@ def log(msg):
     print(msg, file=sys.stderr, flush=True)
 
 
+DANGLING_WORDS = frozenset(
+    "a an and as at because but by for from in into is of on or that the to was "
+    "which while with".split()
+)
+BRACKET_PAIRS = {")": "(", "]": "[", "}": "{"}
+
+
+def truncation_reason(text):
+    """Describe why text looks cut off mid-thought, or None if it reads complete."""
+    body = text.rstrip()
+    if not body:
+        return None
+
+    if body[-1] in ",;:":
+        return f"it ends with {body[-1]!r}, which reads as a clause left unfinished"
+
+    last = body.split()[-1]
+    if last.strip(".,;:!?\"'").lower() in DANGLING_WORDS:
+        return f"it ends on the word {last!r}, which reads as a clause left unfinished"
+
+    for closer, opener in BRACKET_PAIRS.items():
+        if body.count(opener) > body.count(closer):
+            return f"a {opener!r} is never closed by {closer!r}"
+    if body.count('"') % 2:
+        return "a double quote is never closed"
+
+    exempt = last.startswith("#") or last.startswith("www.") or "://" in last
+    if body[-1].isalnum() and not exempt:
+        return f"it ends on {last!r} with no closing punctuation"
+
+    return None
+
+
+def guard_completeness(text, args):
+    if args.get("allow_incomplete"):
+        return
+    reason = truncation_reason(text)
+    if reason:
+        raise RuntimeError(
+            f"This text looks truncated: {reason}. Nothing was published or "
+            "changed. Send the complete text, or pass allow_incomplete: true if "
+            "the ending is deliberate."
+        )
+
+
 def token_file():
     return next((path for path in TOKEN_PATHS if path.is_file()), None)
 
@@ -261,6 +306,8 @@ def tool_create_post(args):
     if visibility not in ("PUBLIC", "CONNECTIONS"):
         raise RuntimeError("visibility must be PUBLIC or CONNECTIONS")
 
+    guard_completeness(text, args)
+
     requested = args.get("images") or []
     if len(requested) > MAX_IMAGES:
         raise RuntimeError(f"{len(requested)} images requested; LinkedIn allows {MAX_IMAGES}")
@@ -290,6 +337,7 @@ def tool_create_post(args):
             "post_urn": urn,
             "url": f"https://www.linkedin.com/feed/update/{urn}/",
             "visibility": visibility,
+            "characters": len(text),
             "images": [urn for urn, _ in uploaded],
         },
         indent=2,
@@ -313,6 +361,8 @@ def tool_edit_post(args):
             f"text is {len(text)} characters; LinkedIn allows {MAX_COMMENTARY}"
         )
 
+    guard_completeness(text, args)
+
     call_api(
         "POST",
         path,
@@ -324,6 +374,7 @@ def tool_edit_post(args):
         {
             "edited": urn,
             "url": f"https://www.linkedin.com/feed/update/{urn}/",
+            "characters": len(text),
             "note": "LinkedIn shows edited posts as edited to everyone who sees them.",
         },
         indent=2,
@@ -384,6 +435,10 @@ TOOLS = {
                     "type": "boolean",
                     "description": "Prevent others from resharing. Defaults to false.",
                 },
+                "allow_incomplete": {
+                    "type": "boolean",
+                    "description": "Publish even if the text looks cut off mid-thought. The server refuses by default, because a post whose tool call ran out of output tokens is indistinguishable from a short one. Set this only when the ending is deliberate.",
+                },
                 "images": {
                     "type": "array",
                     "maxItems": MAX_IMAGES,
@@ -433,6 +488,10 @@ TOOLS = {
                     "type": "string",
                     "description": f"Replacement body, max {MAX_COMMENTARY} characters. This replaces the existing text entirely rather than appending to it.",
                 },
+                "allow_incomplete": {
+                    "type": "boolean",
+                    "description": "Publish even if the text looks cut off mid-thought. The server refuses by default, because a post whose tool call ran out of output tokens is indistinguishable from a short one. Set this only when the ending is deliberate.",
+                },
             },
             "required": ["post_urn", "text"],
             "additionalProperties": False,
@@ -462,7 +521,7 @@ def handle(method, params):
         return {
             "protocolVersion": requested,
             "capabilities": {"tools": {}},
-            "serverInfo": {"name": "linkedin-post", "version": "1.4.0"},
+            "serverInfo": {"name": "linkedin-post", "version": "1.5.0"},
         }
 
     if method == "tools/list":

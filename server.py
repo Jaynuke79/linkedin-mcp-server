@@ -34,9 +34,32 @@ def log(msg):
     print(msg, file=sys.stderr, flush=True)
 
 
+LITTLE_RESERVED = re.compile(r"([\\|{}@\[\]()<>#*_~])")
+LITTLE_PRESERVED = re.compile(
+    r"@\[[^\]\n]*\]\(urn:li:(?:person|organization):[A-Za-z0-9_-]+\)"
+    r"|(?<![\w#])#[A-Za-z0-9_]+"
+)
+
+
+def escape_little_text(text):
+    """Escape LinkedIn little-text reserved characters, keeping mentions and hashtags.
+
+    LinkedIn parses `commentary` as little text, where `(` opens a mention. Raw
+    prose containing one is silently truncated at that character: the API still
+    returns 201 and reports the full length it accepted.
+    """
+    parts = []
+    cursor = 0
+    for match in LITTLE_PRESERVED.finditer(text):
+        parts.append(LITTLE_RESERVED.sub(r"\\\1", text[cursor:match.start()]))
+        parts.append(match.group())
+        cursor = match.end()
+    parts.append(LITTLE_RESERVED.sub(r"\\\1", text[cursor:]))
+    return "".join(parts)
+
+
 DANGLING_WORDS = frozenset(
-    "a an and as at because but by for from in into is of on or that the to was "
-    "which while with".split()
+    ["a", "an", "and", "as", "at", "because", "but", "by", "for", "from", "in", "into", "is", "of", "on", "or", "that", "the", "to", "was", "which", "while", "with"]
 )
 BRACKET_PAIRS = {")": "(", "]": "[", "}": "{"}
 
@@ -307,6 +330,7 @@ def tool_create_post(args):
         raise RuntimeError("visibility must be PUBLIC or CONNECTIONS")
 
     guard_completeness(text, args)
+    commentary = text if args.get("raw_little_text") else escape_little_text(text)
 
     requested = args.get("images") or []
     if len(requested) > MAX_IMAGES:
@@ -315,7 +339,7 @@ def tool_create_post(args):
 
     body = {
         "author": member_urn(),
-        "commentary": text,
+        "commentary": commentary,
         "visibility": visibility,
         "distribution": {
             "feedDistribution": "MAIN_FEED",
@@ -338,6 +362,7 @@ def tool_create_post(args):
             "url": f"https://www.linkedin.com/feed/update/{urn}/",
             "visibility": visibility,
             "characters": len(text),
+            "characters_sent": len(commentary),
             "images": [urn for urn, _ in uploaded],
         },
         indent=2,
@@ -362,11 +387,12 @@ def tool_edit_post(args):
         )
 
     guard_completeness(text, args)
+    commentary = text if args.get("raw_little_text") else escape_little_text(text)
 
     call_api(
         "POST",
         path,
-        {"patch": {"$set": {"commentary": text}}},
+        {"patch": {"$set": {"commentary": commentary}}},
         extra_headers={"X-RestLi-Method": "PARTIAL_UPDATE"},
     )
     urn = args["post_urn"].strip()
@@ -375,6 +401,7 @@ def tool_edit_post(args):
             "edited": urn,
             "url": f"https://www.linkedin.com/feed/update/{urn}/",
             "characters": len(text),
+            "characters_sent": len(commentary),
             "note": "LinkedIn shows edited posts as edited to everyone who sees them.",
         },
         indent=2,
@@ -439,6 +466,10 @@ TOOLS = {
                     "type": "boolean",
                     "description": "Publish even if the text looks cut off mid-thought. The server refuses by default, because a post whose tool call ran out of output tokens is indistinguishable from a short one. Set this only when the ending is deliberate.",
                 },
+                "raw_little_text": {
+                    "type": "boolean",
+                    "description": "Send the text to LinkedIn unescaped. Off by default: the server escapes little-text reserved characters so ordinary prose survives, while leaving @[Name](urn:li:person:123) mentions and #hashtags intact. Set this only to hand-craft little-text markup yourself, and never on text that is already escaped.",
+                },
                 "images": {
                     "type": "array",
                     "maxItems": MAX_IMAGES,
@@ -492,6 +523,10 @@ TOOLS = {
                     "type": "boolean",
                     "description": "Publish even if the text looks cut off mid-thought. The server refuses by default, because a post whose tool call ran out of output tokens is indistinguishable from a short one. Set this only when the ending is deliberate.",
                 },
+                "raw_little_text": {
+                    "type": "boolean",
+                    "description": "Send the text to LinkedIn unescaped. Off by default: the server escapes little-text reserved characters so ordinary prose survives, while leaving @[Name](urn:li:person:123) mentions and #hashtags intact. Set this only to hand-craft little-text markup yourself, and never on text that is already escaped.",
+                },
             },
             "required": ["post_urn", "text"],
             "additionalProperties": False,
@@ -521,7 +556,7 @@ def handle(method, params):
         return {
             "protocolVersion": requested,
             "capabilities": {"tools": {}},
-            "serverInfo": {"name": "linkedin-post", "version": "1.5.0"},
+            "serverInfo": {"name": "linkedin-post", "version": "1.6.0"},
         }
 
     if method == "tools/list":

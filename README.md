@@ -168,6 +168,31 @@ returns an upload URL and an image URN, then the bytes go to that URL by `PUT`.
 Because `w_member_social` is write-only against `/rest/images`, the upload's own
 `201` is the only confirmation available; there is no readable status to poll.
 
+## Reserved characters and silent truncation
+
+LinkedIn parses `commentary` as [little text](https://learn.microsoft.com/en-us/linkedin/marketing/community-management/shares/little-text-format),
+not plain text. In that grammar `(` opens a mention element, and the docs are
+explicit: *all* reserved characters must be backslash-escaped, "even if those
+characters are not used in one of the supported elements or templates."
+
+The reserved set is:
+
+    \  |  {  }  @  [  ]  (  )  <  >  #  *  _  ~
+
+Send an unescaped one and LinkedIn truncates the post at that character. The
+failure is silent in the worst way: the API returns `201`, reports the full
+character count it accepted, and the post appears cut off only in the feed.
+
+This server escapes them for you. Mentions written as
+`@[Name](urn:li:person:123)` and `#hashtags` are detected and passed through
+intact, so they still render as real mentions and hashtags. Pass plain prose and
+let the server handle it; `raw_little_text: true` disables escaping if you want
+to hand-craft the markup, and must never be used on text that is already
+escaped.
+
+Both tools report `characters` (what you sent) alongside `characters_sent`
+(after escaping).
+
 ## The truncation guard
 
 A long post is a single long JSON string inside a `tools/call`. If the model
